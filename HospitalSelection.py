@@ -37,18 +37,13 @@ class EDStatus(Enum):
     FULL = "Full"
 
 
-# ════════════════════════════════════════════════════════════════
+
 # 2. DATA MODELS
-# ════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class HospitalStatus:
-    """
-    Dynamic, real-time operational status of a hospital.
-
-    These values change over time and represent the *current* state
-    at the moment of query — not static design-time capabilities.
-    """
+ 
     ed_status: EDStatus = EDStatus.OPEN
     icu_beds_available: int = 0
     neurosurg_on_call: bool = False
@@ -59,11 +54,9 @@ class HospitalStatus:
 
 @dataclass
 class Hospital:
-    """
-    Complete hospital record combining static capabilities
-    with dynamic real-time status.
-    """
+
     name: str
+    region: str
     # Static capabilities (design-time)
     capabilities: dict[str, bool]
     # Dynamic status (run-time)
@@ -75,23 +68,14 @@ class Hospital:
 
 @dataclass
 class RequirementSpec:
-    """
-    Clinical requirement specification for a given emergency profile.
-
-    Hard constraints are absolute must-haves; a hospital lacking any
-    hard requirement is disqualified entirely.
-
-    Soft constraints are beneficial but not mandatory; missing ones
-    incur a weighted penalty.
-    """
     hard: list[str] = field(default_factory=list)
     soft: list[str] = field(default_factory=list)
 
 
 @dataclass
 class EvaluationResult:
-    """Evaluation outcome for a single hospital candidate."""
     hospital_name: str
+    region: str
     distance_km: float
     eta_minutes: float
     g_cost: float               # g(n) = weighted travel time
@@ -114,14 +98,34 @@ class SelectionReport:
     ranked_results: list[EvaluationResult]
     disqualified: list[EvaluationResult]
 
-
-# ════════════════════════════════════════════════════════════════
 # 3. HOSPITAL DATABASE (Dynamic Status Integrated)
-# ════════════════════════════════════════════════════════════════
 
 HOSPITAL_DATABASE: list[Hospital] = [
+
+    # ── Kota Yogyakarta 
+    Hospital(
+        name="RSUD Kota Yogyakarta",
+        region="Kota Yogyakarta",
+        capabilities={
+            "ED": True, "ICU": True, "CT": True,
+            "Surgery": True, "Neurosurgery": False, "Trauma": True,
+            "Cardiac": True, "Stroke": True,
+            "Ventilator": True, "BloodBank": True,
+        },
+        status=HospitalStatus(
+            ed_status=EDStatus.OPEN,
+            icu_beds_available=2,
+            neurosurg_on_call=False,
+            ventilators_available=4,
+            or_available=True,
+            blood_units_available=15,
+        ),
+        distance_km=2.0,
+        eta_minutes=5,
+    ),
     Hospital(
         name="RS Panti Rapih",
+        region="Kota Yogyakarta",
         capabilities={
             "ED": True, "ICU": True, "CT": True,
             "Surgery": True, "Neurosurgery": True, "Trauma": True,
@@ -139,8 +143,31 @@ HOSPITAL_DATABASE: list[Hospital] = [
         distance_km=4.2,
         eta_minutes=8,
     ),
+
+    # ── Sleman
+    Hospital(
+        name="RSUP Dr. Sardjito",
+        region="Sleman",
+        capabilities={
+            "ED": True, "ICU": True, "CT": True,
+            "Surgery": True, "Neurosurgery": True, "Trauma": True,
+            "Cardiac": True, "Stroke": True,
+            "Ventilator": True, "BloodBank": True,
+        },
+        status=HospitalStatus(
+            ed_status=EDStatus.OPEN,
+            icu_beds_available=8,
+            neurosurg_on_call=True,
+            ventilators_available=12,
+            or_available=True,
+            blood_units_available=50,
+        ),
+        distance_km=6.8,
+        eta_minutes=13,
+    ),
     Hospital(
         name="RS JIH Yogyakarta",
+        region="Sleman",
         capabilities={
             "ED": True, "ICU": True, "CT": True,
             "Surgery": True, "Neurosurgery": True, "Trauma": True,
@@ -149,33 +176,100 @@ HOSPITAL_DATABASE: list[Hospital] = [
         },
         status=HospitalStatus(
             ed_status=EDStatus.OPEN,
-            icu_beds_available=1,
+            icu_beds_available=2,
             neurosurg_on_call=True,
-            ventilators_available=3,
+            ventilators_available=4,
             or_available=True,
             blood_units_available=0,
         ),
         distance_km=9.5,
         eta_minutes=18,
     ),
+
+    # ── Bantul
     Hospital(
-        name="RSUP Dr. Sardjito",
+        name="RSUD Panembahan Senopati",
+        region="Bantul",
         capabilities={
             "ED": True, "ICU": True, "CT": True,
             "Surgery": True, "Neurosurgery": False, "Trauma": True,
-            "Cardiac": True, "Stroke": True,
+            "Cardiac": False, "Stroke": True,
             "Ventilator": True, "BloodBank": True,
         },
         status=HospitalStatus(
             ed_status=EDStatus.OPEN,
-            icu_beds_available=5,
+            icu_beds_available=2,
             neurosurg_on_call=False,
-            ventilators_available=8,
+            ventilators_available=3,
             or_available=True,
-            blood_units_available=40,
+            blood_units_available=10,
         ),
-        distance_km=6.8,
-        eta_minutes=13,
+        distance_km=15.0,
+        eta_minutes=25,
+    ),
+    Hospital(
+        name="RSPAU dr. S. Hardjolukito",
+        region="Bantul",
+        capabilities={
+            "ED": True, "ICU": True, "CT": True,
+            "Surgery": True, "Neurosurgery": False, "Trauma": True,
+            "Cardiac": True, "Stroke": False,
+            "Ventilator": True, "BloodBank": True,
+        },
+        status=HospitalStatus(
+            ed_status=EDStatus.OPEN,
+            icu_beds_available=3,
+            neurosurg_on_call=False,
+            ventilators_available=4,
+            or_available=True,
+            blood_units_available=18,
+        ),
+        distance_km=12.0,
+        eta_minutes=20,
+    ),
+
+    # ── Kulon Progo
+    Hospital(
+        name="RSUD Wates",
+        region="Kulon Progo",
+        capabilities={
+            "ED": True, "ICU": True, "CT": True,
+            "Surgery": True, "Neurosurgery": False, "Trauma": True,
+            "Cardiac": False, "Stroke": False,
+            "Ventilator": True, "BloodBank": True,
+        },
+        status=HospitalStatus(
+            ed_status=EDStatus.OPEN,
+            icu_beds_available=1,
+            neurosurg_on_call=False,
+            ventilators_available=2,
+            or_available=True,
+            blood_units_available=8,
+        ),
+        distance_km=28.0,
+        eta_minutes=45,
+    ),
+
+    # ── Gunungkidul
+    Hospital(
+        name="RSUD Wonosari",
+        region="Gunungkidul",
+        capabilities={
+            "ED": True, "ICU": True, "CT": False,
+            "Surgery": True, "Neurosurgery": False, "Trauma": True,
+            "Cardiac": False, "Stroke": False,
+            "Ventilator": True, "BloodBank": False,
+        },
+        status=HospitalStatus(
+            ed_status=EDStatus.OPEN,
+            icu_beds_available=1,
+            neurosurg_on_call=False,
+            ventilators_available=2,
+            or_available=True,
+            blood_units_available=0,
+        ),
+        distance_km=35.0,
+        eta_minutes=55,
     ),
 ]
 
@@ -202,7 +296,7 @@ SEVERITY_MULTIPLIER: dict[Severity, float] = {
     Severity.CRITICAL: 2.5,
 }
 
-# ETA weight multiplier: Critical patients are more time-sensitive.
+# ETA weight multiplier:
 ETA_WEIGHT: dict[Severity, float] = {
     Severity.MODERATE: 1.0,
     Severity.CRITICAL: 2.0,
@@ -210,14 +304,9 @@ ETA_WEIGHT: dict[Severity, float] = {
 
 
 # 5. REQUIREMENT CONFIGURATION (Data-Driven Mapping Table)
-# Replaces the long if/elif chain with a clean dictionary lookup.
-# Each key is (emergency_type, severity) → RequirementSpec.
-#
-# Hard constraints: Hospital is DISQUALIFIED if any are missing.
-# Soft constraints: Missing ones add a weighted penalty to f(n).
 
 REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
-    # ── Major Trauma ─────────────────────────────────────────
+    # Major Trauma 
     ("Major Trauma", Severity.MODERATE): RequirementSpec(
         hard=["ED", "Trauma"],
         soft=["CT", "Surgery"],
@@ -227,7 +316,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=["CT", "BloodBank"],
     ),
 
-    # ── Severe Head Trauma ───────────────────────────────────
+    # Severe Head Trauma 
     ("Severe Head Trauma", Severity.MODERATE): RequirementSpec(
         hard=["ED", "CT"],
         soft=["Trauma"],
@@ -237,7 +326,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=["Surgery", "Trauma", "BloodBank"],
     ),
 
-    # ── Cardiac Emergency ────────────────────────────────────
+    # Cardiac Emergency
     ("Cardiac Emergency", Severity.MODERATE): RequirementSpec(
         hard=["ED", "Cardiac"],
         soft=[],
@@ -247,7 +336,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=[],
     ),
 
-    # ── Stroke ───────────────────────────────────────────────
+    # Stroke 
     ("Stroke", Severity.MODERATE): RequirementSpec(
         hard=["ED", "CT", "Stroke"],
         soft=[],
@@ -257,7 +346,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=[],
     ),
 
-    # ── Severe Respiratory Emergency ─────────────────────────
+    #  Severe Respiratory Emergency 
     ("Severe Respiratory Emergency", Severity.MODERATE): RequirementSpec(
         hard=["ED", "Ventilator"],
         soft=[],
@@ -279,10 +368,6 @@ def get_requirements(emergency_type: str, severity: Severity) -> Optional[Requir
 
 
 # 6. DYNAMIC STATUS CHECKS
-# These checks translate real-time hospital status into
-# effective capability availability.  A hospital may *own*
-# a capability but have it functionally unavailable right now.
-
 def get_effective_capability(
     hospital: Hospital,
     requirement: str,
@@ -324,7 +409,7 @@ def get_effective_capability(
     return True
 
 
-# 7. CORE EVALUATION ENGINE (Pure Logic — No I/O)
+# 7. CORE EVALUATION 
 
 
 def evaluate_hospital(
@@ -349,7 +434,7 @@ def evaluate_hospital(
     matched: list[str] = []
     missing_soft: list[str] = []
 
-    # ── Hard Constraint Check (absolute filter) ──────────────
+    # ── Hard Constraint Check (absolute filter)
     for req in requirements.hard:
         if get_effective_capability(hospital, req):
             matched.append(req)
@@ -359,6 +444,7 @@ def evaluate_hospital(
     if disqualification_reasons:
         return EvaluationResult(
             hospital_name=hospital.name,
+            region=hospital.region,
             distance_km=hospital.distance_km,
             eta_minutes=hospital.eta_minutes,
             g_cost=math.inf,
@@ -372,7 +458,7 @@ def evaluate_hospital(
             ed_status=hospital.status.ed_status.value,
         )
 
-    # ── Soft Constraint Check (penalty accumulation) 
+    #  Soft Constraint Check (penalty accumulation) 
     severity_mult = SEVERITY_MULTIPLIER[severity]
 
     h_cost = 0.0
@@ -384,15 +470,16 @@ def evaluate_hospital(
             base_weight = BASE_PENALTY_WEIGHTS.get(req, 10)
             h_cost += base_weight * severity_mult
 
-    # ── g(n): Weighted Travel Time
+    # g(n): Weighted Travel Time
     eta_weight = ETA_WEIGHT[severity]
     g_cost = hospital.eta_minutes * eta_weight
 
-    # ── f(n) = g(n) + h(n) 
+    # f(n) = g(n) + h(n) 
     f_cost = g_cost + h_cost
 
     return EvaluationResult(
         hospital_name=hospital.name,
+        region=hospital.region,
         distance_km=hospital.distance_km,
         eta_minutes=hospital.eta_minutes,
         g_cost=round(g_cost, 2),
@@ -412,21 +499,7 @@ def select_hospitals(
     hospital_db: list[Hospital] | None = None,
     top_n: int = 3,
 ) -> SelectionReport:
-    """
-    Evaluate all hospitals and return a ranked Top-N selection report.
 
-    Process:
-      1. Look up requirements from the configuration table.
-      2. Evaluate every hospital (hard filter + soft scoring).
-      3. Rank qualified hospitals by f(n) ascending.
-      4. Tie-breaking order:
-         a) Lowest f(n)
-         b) Shortest ETA (fastest arrival)
-         c) Most ICU beds available
-         d) Hospital name (alphabetical, last resort)
-
-    Returns a SelectionReport with ranked and disqualified lists.
-    """
     if hospital_db is None:
         hospital_db = HOSPITAL_DATABASE
 
@@ -489,7 +562,7 @@ def display_hospitals(hospital_db: list[Hospital] | None = None) -> None:
     print(DIVIDER)
 
     for h in hospital_db:
-        print(f"\n  ┌─ {h.name}")
+        print(f"\n  ┌─ {h.name}  [{h.region}]")
         print(f"  │  Distance: {h.distance_km} km  |  ETA: {h.eta_minutes} min")
         print(f"  │  ED Status: {h.status.ed_status.value}  |  "
               f"ICU Beds: {h.status.icu_beds_available}  |  "
@@ -534,7 +607,7 @@ def display_evaluation_detail(result: EvaluationResult, rank: int) -> None:
         return
 
     medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"#{rank}")
-    print(f"\n  {medal}  Rank #{rank}: {result.hospital_name}")
+    print(f"\n  {medal}  Rank #{rank}: {result.hospital_name}  [{result.region}]")
     print(f"  {THIN_DIVIDER}")
     print(f"    Distance     : {result.distance_km} km")
     print(f"    ETA          : {result.eta_minutes} min")
