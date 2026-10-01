@@ -1,27 +1,30 @@
 """
 Emergency Hospital Selection System
-Multi-Criteria Decision Evaluation with A* based cost function.
+A* Search Algorithm for Clinical Requirement Matching
 
 Cost function:  f(n) = g(n) + h(n)
- - g(n) = Travel time (ETA in minutes) from patient location to hospital.
- - h(n) = Capability deficiency penalty (soft-constraint scoring).
+  - g(n) = Accumulated penalty / mismatch cost of already evaluated requirements.
+  - h(n) = Minimum remaining mismatch cost for unevaluated requirements (admissible heuristic).
+  - f(n) = Total estimated mismatch cost used by A* to prioritize states with the lowest mismatch.
 
-Hard constraints filter out hospitals that cannot satisfy mandatory
-clinical requirements. Soft constraints apply weighted penalties for
-missing optional capabilities, scaled by patient severity.
+Hard constraints disqualify hospitals that lack mandatory clinical capabilities (g(n) = inf).
+Soft constraints add weighted penalties for missing optional capabilities, scaled by patient severity.
 
 Architecture:
-  - Pure data layer   → dataclasses & typed dictionaries
-  - Pure logic layer  → functions that return result objects (no I/O)
-  - Presentation layer → CLI display functions (all print() calls)
+  - Pure data layer    -> dataclasses & typed enumerations
+  - A* Search engine   -> pure logic layer (heapq / state-based search, no I/O)
+  - Presentation layer -> CLI display functions (all print() calls)
 """
 
 from __future__ import annotations
 
+import heapq
 import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+
 
 # 1. ENUMERATIONS
 
@@ -37,13 +40,14 @@ class EDStatus(Enum):
     FULL = "Full"
 
 
-
 # 2. DATA MODELS
-
 
 @dataclass
 class HospitalStatus:
- 
+    """
+    Dynamic, real-time operational status of a hospital.
+    Represents the live operational state at query time.
+    """
     ed_status: EDStatus = EDStatus.OPEN
     icu_beds_available: int = 0
     neurosurg_on_call: bool = False
@@ -54,38 +58,53 @@ class HospitalStatus:
 
 @dataclass
 class Hospital:
-
+    """
+    Complete hospital record combining static capabilities
+    with dynamic real-time status.
+    """
     name: str
     region: str
-    # Static capabilities (design-time)
     capabilities: dict[str, bool]
-    # Dynamic status (run-time)
     status: HospitalStatus
-    # Distance & ETA from patient location
-    distance_km: float = 0.0
-    eta_minutes: float = 0.0
 
 
 @dataclass
 class RequirementSpec:
+    """
+    Clinical requirement specification for a given emergency profile.
+
+    Hard constraints are absolute must-haves; a hospital lacking any
+    hard requirement is disqualified entirely (g(n) = inf).
+
+    Soft constraints are beneficial but not mandatory; missing ones
+    incur a weighted penalty accumulated into g(n).
+    """
     hard: list[str] = field(default_factory=list)
     soft: list[str] = field(default_factory=list)
+
+    @property
+    def all_requirements(self) -> list[tuple[str, bool]]:
+        """
+        Returns an ordered list of all requirements:
+        [(name, is_hard), ...] with hard constraints evaluated first.
+        """
+        return [(r, True) for r in self.hard] + [(r, False) for r in self.soft]
 
 
 @dataclass
 class EvaluationResult:
+    """Evaluation outcome for a single hospital candidate produced by A* search."""
     hospital_name: str
     region: str
-    distance_km: float
-    eta_minutes: float
-    g_cost: float               # g(n) = weighted travel time
-    h_cost: float               # h(n) = capability deficiency penalty
+    g_cost: float               # g(n) = penalty already evaluated
+    h_cost: float               # h(n) = remaining heuristic mismatch cost
     f_cost: float               # f(n) = g(n) + h(n)
     matched: list[str]          # Requirements the hospital satisfies
     missing_soft: list[str]     # Missing optional capabilities
     disqualified: bool = False
     disqualification_reasons: list[str] = field(default_factory=list)
     icu_beds_available: int = 0
+    ventilators_available: int = 0
     ed_status: str = "Open"
 
 
@@ -98,11 +117,12 @@ class SelectionReport:
     ranked_results: list[EvaluationResult]
     disqualified: list[EvaluationResult]
 
-# 3. HOSPITAL DATABASE (Dynamic Status Integrated)
+
+# 3. HOSPITAL DATABASE (8 Hospitals across D.I. Yogyakarta)
 
 HOSPITAL_DATABASE: list[Hospital] = [
 
-    # ── Kota Yogyakarta 
+    # ── Kota Yogyakarta ──────────────────────────────────────
     Hospital(
         name="RSUD Kota Yogyakarta",
         region="Kota Yogyakarta",
@@ -120,8 +140,6 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=15,
         ),
-        distance_km=2.0,
-        eta_minutes=5,
     ),
     Hospital(
         name="RS Panti Rapih",
@@ -140,11 +158,9 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=20,
         ),
-        distance_km=4.2,
-        eta_minutes=8,
     ),
 
-    # ── Sleman
+    # ── Sleman ───────────────────────────────────────────────
     Hospital(
         name="RSUP Dr. Sardjito",
         region="Sleman",
@@ -162,8 +178,6 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=50,
         ),
-        distance_km=6.8,
-        eta_minutes=13,
     ),
     Hospital(
         name="RS JIH Yogyakarta",
@@ -182,11 +196,9 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=0,
         ),
-        distance_km=9.5,
-        eta_minutes=18,
     ),
 
-    # ── Bantul
+    # ── Bantul ───────────────────────────────────────────────
     Hospital(
         name="RSUD Panembahan Senopati",
         region="Bantul",
@@ -204,8 +216,6 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=10,
         ),
-        distance_km=15.0,
-        eta_minutes=25,
     ),
     Hospital(
         name="RSPAU dr. S. Hardjolukito",
@@ -224,11 +234,9 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=18,
         ),
-        distance_km=12.0,
-        eta_minutes=20,
     ),
 
-    # ── Kulon Progo
+    # ── Kulon Progo ──────────────────────────────────────────
     Hospital(
         name="RSUD Wates",
         region="Kulon Progo",
@@ -246,11 +254,9 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=8,
         ),
-        distance_km=28.0,
-        eta_minutes=45,
     ),
 
-    # ── Gunungkidul
+    # ── Gunungkidul ──────────────────────────────────────────
     Hospital(
         name="RSUD Wonosari",
         region="Gunungkidul",
@@ -268,45 +274,38 @@ HOSPITAL_DATABASE: list[Hospital] = [
             or_available=True,
             blood_units_available=0,
         ),
-        distance_km=35.0,
-        eta_minutes=55,
     ),
 ]
 
 
-# 4. PENALTY WEIGHT TABLE (Base Weights)
+# ════════════════════════════════════════════════════════════════
+# 4. PENALTY WEIGHT TABLE
+# ════════════════════════════════════════════════════════════════
 
 BASE_PENALTY_WEIGHTS: dict[str, float] = {
-    "ED":            10,
-    "ICU":           20,
-    "CT":            20,
-    "Surgery":       20,
-    "Neurosurgery":  25,
-    "Trauma":        10,
-    "Cardiac":       20,
-    "Stroke":        20,
-    "Ventilator":    25,
-    "BloodBank":     15,
+    "ED":            10.0,
+    "ICU":           20.0,
+    "CT":            20.0,
+    "Surgery":       20.0,
+    "Neurosurgery":  25.0,
+    "Trauma":        10.0,
+    "Cardiac":       20.0,
+    "Stroke":        20.0,
+    "Ventilator":    25.0,
+    "BloodBank":     15.0,
 }
 
-# Severity multiplier: Critical cases receive much heavier penalties
-# for missing capabilities, reflecting the greater clinical risk.
+# Severity multiplier: Critical cases receive heavier penalties for missing capabilities
 SEVERITY_MULTIPLIER: dict[Severity, float] = {
     Severity.MODERATE: 1.0,
     Severity.CRITICAL: 2.5,
 }
 
-# ETA weight multiplier:
-ETA_WEIGHT: dict[Severity, float] = {
-    Severity.MODERATE: 1.0,
-    Severity.CRITICAL: 2.0,
-}
 
-
-# 5. REQUIREMENT CONFIGURATION (Data-Driven Mapping Table)
+# 5. REQUIREMENT CONFIGURATION TABLE
 
 REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
-    # Major Trauma 
+    # ── Major Trauma
     ("Major Trauma", Severity.MODERATE): RequirementSpec(
         hard=["ED", "Trauma"],
         soft=["CT", "Surgery"],
@@ -316,7 +315,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=["CT", "BloodBank"],
     ),
 
-    # Severe Head Trauma 
+    # ── Severe Head Trauma
     ("Severe Head Trauma", Severity.MODERATE): RequirementSpec(
         hard=["ED", "CT"],
         soft=["Trauma"],
@@ -326,7 +325,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=["Surgery", "Trauma", "BloodBank"],
     ),
 
-    # Cardiac Emergency
+    # ── Cardiac Emergency
     ("Cardiac Emergency", Severity.MODERATE): RequirementSpec(
         hard=["ED", "Cardiac"],
         soft=[],
@@ -336,7 +335,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=[],
     ),
 
-    # Stroke 
+    # ── Stroke
     ("Stroke", Severity.MODERATE): RequirementSpec(
         hard=["ED", "CT", "Stroke"],
         soft=[],
@@ -346,7 +345,7 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
         soft=[],
     ),
 
-    #  Severe Respiratory Emergency 
+    # ── Severe Respiratory Emergency
     ("Severe Respiratory Emergency", Severity.MODERATE): RequirementSpec(
         hard=["ED", "Ventilator"],
         soft=[],
@@ -359,33 +358,25 @@ REQUIREMENT_TABLE: dict[tuple[str, Severity], RequirementSpec] = {
 
 
 def get_requirements(emergency_type: str, severity: Severity) -> Optional[RequirementSpec]:
-    """
-    Look up clinical requirements from the configuration table.
-
-    Returns None if no matching profile exists.
-    """
+    """Look up clinical requirements from the configuration table."""
     return REQUIREMENT_TABLE.get((emergency_type, severity))
 
 
 # 6. DYNAMIC STATUS CHECKS
+
 def get_effective_capability(
     hospital: Hospital,
     requirement: str,
 ) -> bool:
     """
-    Determine whether a requirement is *effectively* available,
+    Determine whether a requirement is effectively available,
     combining static capability with dynamic real-time status.
-
-    Examples:
-      - ICU capability exists, but 0 beds available → False
-      - ED exists, but ED status is "Full" → False
-      - Neurosurgery exists, but no neurosurgeon on call → False
     """
-    # Static capability check first
+    # Static capability check
     if not hospital.capabilities.get(requirement, False):
         return False
 
-    # Dynamic availability overrides
+    # Dynamic status overrides
     status = hospital.status
 
     if requirement == "ED" and status.ed_status == EDStatus.FULL:
@@ -408,80 +399,113 @@ def get_effective_capability(
 
     return True
 
+# 7. A* SEARCH EVALUATION ENGINE (Pure Logic — No I/O)
 
-# 7. CORE EVALUATION 
+@dataclass(order=True)
+class AStarNode:
+    """
+    Search node representing a state in the evaluation process.
+
+    Ordering is based on (f_cost, -icu_beds, hospital_name) to allow
+    heapq to prioritize states with the lowest estimated mismatch cost.
+    """
+    f_cost: float
+    icu_beds: int
+    step: int
+    hospital: Hospital = field(compare=False)
+    g_cost: float = field(compare=False)
+    h_cost: float = field(compare=False)
+    matched: list[str] = field(default_factory=list, compare=False)
+    missing_soft: list[str] = field(default_factory=list, compare=False)
+    disqualified: bool = field(default=False, compare=False)
+    disqualification_reasons: list[str] = field(default_factory=list, compare=False)
 
 
-def evaluate_hospital(
+def calculate_heuristic(
+    remaining_requirements: list[tuple[str, bool]],
+    severity: Severity,
+) -> float:
+    """
+    h(n): Minimum remaining mismatch cost for unevaluated requirements.
+
+    Admissible Heuristic:
+      Assumes in the best-case that all remaining unevaluated requirements
+      might be satisfied by the hospital (penalty = 0).
+      Hence, h(n) = 0.0, providing an admissible lower bound on remaining mismatch.
+    """
+    return 0.0
+
+
+def a_star_evaluate_hospital(
     hospital: Hospital,
     requirements: RequirementSpec,
     severity: Severity,
 ) -> EvaluationResult:
     """
-    Evaluate a single hospital against patient requirements.
+    Evaluates a single hospital using an A* state-space evaluation:
 
-    Cost model:
-      f(n) = g(n) + h(n)
-      g(n) = ETA × severity_weight   (travel time cost)
-      h(n) = Σ penalty(missing_soft)  (capability deficiency penalty)
+      State n = (hospital, step_index)
+        - g(n) = Accumulated penalty of already evaluated requirements
+        - h(n) = Minimum remaining mismatch cost for unevaluated requirements
+        - f(n) = g(n) + h(n) (Estimated total mismatch cost)
 
-    Hard constraints cause immediate disqualification.
-    Soft constraints accumulate weighted penalties.
-
-    Returns an EvaluationResult with all scoring details.
+    Transitions:
+      - At each step i, requirement r_i is evaluated.
+      - If r_i is a hard constraint and missing:
+          g(n) = inf, hospital is immediately disqualified.
+      - If r_i is a soft constraint and missing:
+          g(n) += base_weight(r_i) * severity_multiplier
+      - If r_i is satisfied:
+          g(n) unchanged (cost added = 0)
+      - Goal State: All requirements evaluated (step == total_requirements).
     """
-    disqualification_reasons: list[str] = []
-    matched: list[str] = []
-    missing_soft: list[str] = []
-
-    # ── Hard Constraint Check (absolute filter)
-    for req in requirements.hard:
-        if get_effective_capability(hospital, req):
-            matched.append(req)
-        else:
-            disqualification_reasons.append(req)
-
-    if disqualification_reasons:
-        return EvaluationResult(
-            hospital_name=hospital.name,
-            region=hospital.region,
-            distance_km=hospital.distance_km,
-            eta_minutes=hospital.eta_minutes,
-            g_cost=math.inf,
-            h_cost=math.inf,
-            f_cost=math.inf,
-            matched=matched,
-            missing_soft=[],
-            disqualified=True,
-            disqualification_reasons=disqualification_reasons,
-            icu_beds_available=hospital.status.icu_beds_available,
-            ed_status=hospital.status.ed_status.value,
-        )
-
-    #  Soft Constraint Check (penalty accumulation) 
+    all_reqs = requirements.all_requirements
+    total_steps = len(all_reqs)
     severity_mult = SEVERITY_MULTIPLIER[severity]
 
-    h_cost = 0.0
-    for req in requirements.soft:
-        if get_effective_capability(hospital, req):
-            matched.append(req)
+    # Initial state: step 0, g(0) = 0
+    g_cost = 0.0
+    matched: list[str] = []
+    missing_soft: list[str] = []
+    disqualification_reasons: list[str] = []
+
+    for step in range(total_steps):
+        req_name, is_hard = all_reqs[step]
+        is_satisfied = get_effective_capability(hospital, req_name)
+
+        if is_satisfied:
+            matched.append(req_name)
         else:
-            missing_soft.append(req)
-            base_weight = BASE_PENALTY_WEIGHTS.get(req, 10)
-            h_cost += base_weight * severity_mult
+            if is_hard:
+                disqualification_reasons.append(req_name)
+                # Hard constraint failure -> infinite penalty
+                return EvaluationResult(
+                    hospital_name=hospital.name,
+                    region=hospital.region,
+                    g_cost=math.inf,
+                    h_cost=math.inf,
+                    f_cost=math.inf,
+                    matched=matched,
+                    missing_soft=missing_soft,
+                    disqualified=True,
+                    disqualification_reasons=disqualification_reasons,
+                    icu_beds_available=hospital.status.icu_beds_available,
+                    ventilators_available=hospital.status.ventilators_available,
+                    ed_status=hospital.status.ed_status.value,
+                )
+            else:
+                missing_soft.append(req_name)
+                penalty = BASE_PENALTY_WEIGHTS.get(req_name, 10.0) * severity_mult
+                g_cost += penalty
 
-    # g(n): Weighted Travel Time
-    eta_weight = ETA_WEIGHT[severity]
-    g_cost = hospital.eta_minutes * eta_weight
-
-    # f(n) = g(n) + h(n) 
+    # Goal state reached: all requirements evaluated
+    # Remaining unevaluated requirements = 0 -> h(goal) = 0
+    h_cost = 0.0
     f_cost = g_cost + h_cost
 
     return EvaluationResult(
         hospital_name=hospital.name,
         region=hospital.region,
-        distance_km=hospital.distance_km,
-        eta_minutes=hospital.eta_minutes,
         g_cost=round(g_cost, 2),
         h_cost=round(h_cost, 2),
         f_cost=round(f_cost, 2),
@@ -489,6 +513,7 @@ def evaluate_hospital(
         missing_soft=missing_soft,
         disqualified=False,
         icu_beds_available=hospital.status.icu_beds_available,
+        ventilators_available=hospital.status.ventilators_available,
         ed_status=hospital.status.ed_status.value,
     )
 
@@ -499,7 +524,15 @@ def select_hospitals(
     hospital_db: list[Hospital] | None = None,
     top_n: int = 3,
 ) -> SelectionReport:
+    """
+    Evaluates all hospitals via A* mismatch scoring and ranks the Top-N candidates.
 
+    Tie-breaking hierarchy:
+      1. Lowest f(n) (minimal total mismatch penalty)
+      2. Most ICU beds available (highest clinical capacity)
+      3. Most ventilators available (respiratory backup capacity)
+      4. Alphabetical name (deterministic fallback)
+    """
     if hospital_db is None:
         hospital_db = HOSPITAL_DATABASE
 
@@ -517,22 +550,18 @@ def select_hospitals(
     disqualified: list[EvaluationResult] = []
 
     for hospital in hospital_db:
-        result = evaluate_hospital(hospital, requirements, severity)
+        result = a_star_evaluate_hospital(hospital, requirements, severity)
         if result.disqualified:
             disqualified.append(result)
         else:
             qualified.append(result)
 
-    # ── Tie-breaking sort
-    # Primary:   lowest f(n)
-    # Secondary: shortest ETA (time is life in emergencies)
-    # Tertiary:  most ICU beds (higher capacity = more resilient)
-    # Quaternary: alphabetical name (deterministic fallback)
+    # Rank qualified candidates: lowest f_cost, highest ICU beds, highest ventilators, alphabetical
     qualified.sort(
         key=lambda r: (
             r.f_cost,
-            r.eta_minutes,
             -r.icu_beds_available,
+            -r.ventilators_available,
             r.hospital_name,
         )
     )
@@ -545,8 +574,8 @@ def select_hospitals(
         disqualified=disqualified,
     )
 
-
 # 8. PRESENTATION LAYER (CLI Display — All I/O Here)
+
 
 DIVIDER = "═" * 70
 THIN_DIVIDER = "─" * 70
@@ -563,7 +592,6 @@ def display_hospitals(hospital_db: list[Hospital] | None = None) -> None:
 
     for h in hospital_db:
         print(f"\n  ┌─ {h.name}  [{h.region}]")
-        print(f"  │  Distance: {h.distance_km} km  |  ETA: {h.eta_minutes} min")
         print(f"  │  ED Status: {h.status.ed_status.value}  |  "
               f"ICU Beds: {h.status.icu_beds_available}  |  "
               f"Ventilators: {h.status.ventilators_available}")
@@ -600,57 +628,54 @@ def display_requirements(requirements: RequirementSpec) -> None:
 
 
 def display_evaluation_detail(result: EvaluationResult, rank: int) -> None:
-    """Display detailed evaluation for a single hospital."""
+    """Display detailed A* evaluation for a single hospital."""
     if result.disqualified:
-        print(f"\n  ✗ {result.hospital_name}  [DISQUALIFIED]")
+        print(f"\n  ✗ {result.hospital_name}  [{result.region}]  [DISQUALIFIED]")
         print(f"    Missing mandatory: {', '.join(result.disqualification_reasons)}")
         return
 
     medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"#{rank}")
     print(f"\n  {medal}  Rank #{rank}: {result.hospital_name}  [{result.region}]")
     print(f"  {THIN_DIVIDER}")
-    print(f"    Distance     : {result.distance_km} km")
-    print(f"    ETA          : {result.eta_minutes} min")
-    print(f"    ED Status    : {result.ed_status}")
-    print(f"    ICU Beds     : {result.icu_beds_available}")
-    print(f"    g(n) Travel  : {result.g_cost}")
-    print(f"    h(n) Penalty : {result.h_cost}")
-    print(f"    f(n) Total   : {result.f_cost}")
-    print(f"    Matched      : {', '.join(result.matched) if result.matched else '—'}")
+    print(f"    ED Status               : {result.ed_status}")
+    print(f"    ICU Beds Available      : {result.icu_beds_available}")
+    print(f"    Ventilators Available   : {result.ventilators_available}")
+    print(f"    g(n) Evaluated Penalty  : {result.g_cost}")
+    print(f"    h(n) Remaining Heuristic: {result.h_cost}")
+    print(f"    f(n) Total Mismatch Cost: {result.f_cost}")
+    print(f"    Matched Capabilities    : {', '.join(result.matched) if result.matched else '—'}")
     if result.missing_soft:
-        print(f"    Missing (soft): {', '.join(result.missing_soft)}")
+        print(f"    Missing Optional (Soft) : {', '.join(result.missing_soft)}")
 
 
 def display_report(report: SelectionReport) -> None:
-    """Display the complete selection report."""
+    """Display the complete A* selection report."""
     print(f"\n{'━' * 70}")
-    print("  EMERGENCY HOSPITAL SELECTION — RESULTS")
+    print("  EMERGENCY HOSPITAL SELECTION — A* RESULTS")
     print(f"{'━' * 70}")
     print(f"\n  Emergency Type : {report.emergency_type}")
     print(f"  Severity       : {report.severity.value}")
 
     sev_mult = SEVERITY_MULTIPLIER[report.severity]
-    eta_w = ETA_WEIGHT[report.severity]
-    print(f"\n  Scoring Parameters:")
+    print(f"\n  A* Cost Formulation:")
     print(f"    Severity Penalty Multiplier : ×{sev_mult}")
-    print(f"    ETA Weight (time urgency)   : ×{eta_w}")
     print(f"    Cost Function               : f(n) = g(n) + h(n)")
-    print(f"      g(n) = ETA × {eta_w}  (travel time cost)")
-    print(f"      h(n) = Σ penalty(missing) × {sev_mult}  (deficiency penalty)")
+    print(f"      g(n) = Penalty of already evaluated requirements")
+    print(f"      h(n) = Minimum remaining mismatch cost for unevaluated requirements")
+    print(f"      f(n) = Total estimated mismatch cost")
 
     # Ranked candidates
     if report.ranked_results:
         print(f"\n{DIVIDER}")
-        print(f"  TOP-{len(report.ranked_results)} RECOMMENDED HOSPITALS")
+        print(f"  TOP-{len(report.ranked_results)} RECOMMENDED HOSPITALS (Lowest Mismatch Cost)")
         print(DIVIDER)
         for rank, result in enumerate(report.ranked_results, 1):
             display_evaluation_detail(result, rank)
 
         best = report.ranked_results[0]
         print(f"\n{'━' * 70}")
-        print(f"  >>> PRIMARY RECOMMENDATION: {best.hospital_name}")
-        print(f"      ETA {best.eta_minutes} min  |  "
-              f"f(n) = {best.f_cost}  |  "
+        print(f"  >>> PRIMARY RECOMMENDATION: {best.hospital_name}  [{best.region}]")
+        print(f"      f(n) Mismatch Cost = {best.f_cost}  |  "
               f"ED: {best.ed_status}  |  "
               f"ICU Beds: {best.icu_beds_available}")
         print(f"{'━' * 70}")
@@ -662,7 +687,7 @@ def display_report(report: SelectionReport) -> None:
     # Disqualified hospitals
     if report.disqualified:
         print(f"\n{DIVIDER}")
-        print("  DISQUALIFIED HOSPITALS")
+        print("  DISQUALIFIED HOSPITALS (Hard Constraint Violations)")
         print(DIVIDER)
         for result in report.disqualified:
             display_evaluation_detail(result, rank=0)
@@ -687,7 +712,7 @@ def get_user_input() -> tuple[str, Severity]:
     """Collect emergency type and severity from the user via CLI."""
     print(f"\n{DIVIDER}")
     print("  EMERGENCY HOSPITAL SELECTION SYSTEM")
-    print("  Multi-Criteria Decision Evaluation")
+    print("  A* Clinical Requirement Mismatch Evaluation")
     print(DIVIDER)
 
     # ── Emergency Type
@@ -722,11 +747,10 @@ def get_user_input() -> tuple[str, Severity]:
 
     return emergency_type, severity
 
-
-
 # 10. MAIN PROGRAM
+
 def main() -> None:
-    """Entry point: collect input → evaluate → display results."""
+    """Entry point: show database -> get input -> evaluate via A* -> display report."""
     # 1. Show hospital database overview
     display_hospitals()
 
@@ -742,7 +766,7 @@ def main() -> None:
     # 4. Display requirements
     display_requirements(requirements)
 
-    # 5. Run evaluation (pure logic — no side effects)
+    # 5. Run A* evaluation
     report = select_hospitals(
         emergency_type=emergency_type,
         severity=severity,
@@ -751,6 +775,7 @@ def main() -> None:
 
     # 6. Display results
     display_report(report)
+
 
 if __name__ == "__main__":
     main()
